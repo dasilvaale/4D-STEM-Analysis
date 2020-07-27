@@ -1,2 +1,3 @@
 # 4D-STEM-Analysis
- Analysis of 4D Scanning Transmission Electron Microscopy Data
+These python functions are developed for the analysis of 4D scanning transmission electron microscopy (4D-STEM) data. 
+The codes are designed to analyse specifically nanodiffraction data
