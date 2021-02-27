@@ -1,12 +1,22 @@
 # -*- coding: utf-8 -*-
+"""
+Created on Tue Mar 31 21:13:37 2020
+ 
+@author: Alessandra da Silva: dasilvaalessandra@gmail.com
 
+All use of this code must cite the following works:
+    [1] The chain of chirality transfer in tellurium nanocrystals, Ben-Moshe, da Silva et al., under review.
+    
+"""
+
+
+from matplotlib.gridspec import GridSpec
 import numpy as np
 from skimage import exposure, feature, transform
 from scipy import optimize, ndimage
-from scipy.spatial.distance import cdist
 from matplotlib import pyplot as plt
-from matplotlib.patches import Patch, Rectangle
-from .thresholding_functions import threshold_otsu_median
+from matplotlib.patches import Patch
+from thresholding_functions import threshold_otsu_median
 
 from ipywidgets import interactive, IntSlider, Checkbox, Dropdown, VBox
 from IPython.display import display
@@ -15,14 +25,14 @@ from logging import warning
 
 def fit_circle_through_3_points(ABC):
     """
-    
+
     Fits a geometric circle through three xy pts: ABC.
-    
+
     Parameters
     ----------
     ABC: (3, 2) ndarray
         3 rows of (x, y) points.
-        
+
     Returns
     -------
     R: float
@@ -67,7 +77,7 @@ def fit_circle_through_3_points(ABC):
 
 def circle_residuals(params, points, weight=None):
     """
-    
+
     Calculates sum of residuals between experimental points and circle.
 
     Residuals calulated as the square difference between points and radius.
@@ -87,7 +97,7 @@ def circle_residuals(params, points, weight=None):
     -------
     residuals: float
         Sum of squares of residuals.
-    
+
     """
     # check inputs
     points = np.asarray(points)
@@ -104,7 +114,7 @@ def circle_residuals(params, points, weight=None):
 
 def constrain_perimeter(params, point):
     """
-    
+
     Calculates distance between circle center defined by params and a point center.
     Useful to constrain minimization functions.
     Example: Distance from fit circle to the direct beam is equal to the radius.
@@ -121,7 +131,7 @@ def constrain_perimeter(params, point):
     -------
     distance: float
         Distance between poicircle defined by params and center.
-    
+
     """
     # format inputs
     params = np.asarray(params)
@@ -153,7 +163,7 @@ def fit_laue_circles_3points(data, points, mask, cm0):
         Circle parameters for Laue circle fit using geometric 3-point method.
         Last dimension is composed of (r, xc, yc).
         (j, i) pixels not fitted will have np.nan values.
-    
+
     """
     # out shape [j,i,3]
     out = np.zeros(data.shape[:2] + (3,), dtype=np.float)
@@ -190,7 +200,7 @@ def fit_laue_circles_3points(data, points, mask, cm0):
     return out
 
 
-def detect_disks(data, mask=None, num_peaks=20, verbose=True, **kwargs):
+def detect_disks(data, mask=None, num_peaks=20, logscale=True, verbose=True, **kwargs):
     """
 
     Detect diffraction disks on 4D-STEM data for each probe position (j, i).
@@ -201,10 +211,14 @@ def detect_disks(data, mask=None, num_peaks=20, verbose=True, **kwargs):
         4D-STEM data where first two dimensions are probe position (j, i) and latter two are dimensions of each diffraction image.
     mask: (j, i) ndarray of bool
         Mask of region of interest. True where points are valid.
-    
+    num_peaks: int
+        Maximum number of peaks to return.
+    logscale: bool
+        If True the image is rescaled and peaks are logarithm transformed to increase image contrast.
+
     kwargs_plm:
         Passed to skimage.feature.blob_log
- 
+
     Returns
     -------
     peaks: (j, i, N, 2) ndarray
@@ -224,8 +238,11 @@ def detect_disks(data, mask=None, num_peaks=20, verbose=True, **kwargs):
         ), "mask must have same shape as first two dimensions of data."
 
     # initialize array with NaN values
-    out = np.empty((data.shape[0], data.shape[1], num_peaks, 2), dtype=np.float)
-    out.fill(np.nan)
+    ndim = len(
+        data.shape[2:]
+    )  # data dimension not including scanning pixels, should be 2
+    out = np.empty((data.shape[0], data.shape[1], num_peaks, ndim), dtype=np.float)
+    out.fill(np.nan)  # fill array with NaN, real values will overwrite these
 
     for j in range(data.shape[0]):
         for i in range(data.shape[1]):
@@ -237,15 +254,27 @@ def detect_disks(data, mask=None, num_peaks=20, verbose=True, **kwargs):
                 continue
 
             # minimum subtraction +1 stops negative numbers from crashing log
-            image = exposure.rescale_intensity(
-                np.log(data[j, i, ...].astype(float) - data[j, i].min() + 1.0),
-                out_range=(0.0, 1.0),
-            )
+            if logscale:
+                image = exposure.rescale_intensity(
+                    np.log(data[j, i, ...].astype(float) - data[j, i].min() + 1.0),
+                    out_range=(0.0, 1.0),
+                )
+            else:
+                image = exposure.rescale_intensity(
+                    data[j, i, ...].astype(float), out_range=(0.0, 1.0)
+                )
 
             # find peaks
             peaks = feature.blob_log(image, **kwargs)
             # sort peaks by most intense
-            intensities = data[j, i][peaks[:, 0].astype(int), peaks[:, 1].astype(int)]
+            # as just a relative sort, also works on log image the same
+
+            intensities = data[j, i][
+                tuple(
+                    aa.ravel()
+                    for aa in np.split(peaks[:, :-1].astype(int), ndim, axis=1)
+                )
+            ]
             peaks = peaks[np.argsort(intensities)[::-1]]
             # allocate up to num_peaks of detected peaks
             out[j, i][: len(peaks)] = peaks[:num_peaks, :-1]
@@ -418,7 +447,7 @@ def get_new_ij(i, j, delta=1):
 def attempt_manual_fit(cp, pts, to_fit, mask, **kwargs):
     """
     Try to do manual circle fitting. Fn chooses random neighboring pt to use as guess.
-    
+
     Parameters
     ----------
     cp: numpy.ndarray
@@ -431,7 +460,7 @@ def attempt_manual_fit(cp, pts, to_fit, mask, **kwargs):
         True where pts are valid.
     **kwargs: dict
         kwargs to pass to scipy.optimize.minimize.
-        
+
     Returns
     -------
     new_fmin: nump.ndarray
@@ -478,12 +507,12 @@ def decompose_phi_from_circle(
 ):
     """
     Compute phix, phiy from circle fit coords (r,j,i).
-    
+
     Parameters
     ----------
     circle_coords: circle coordinates. Standard coordinates are the output from the fit_laue_circle functions
     np.ndarray, shape = (j,i,3)
-        (radius, row, col) for each ji 
+        (radius, row, col) for each ji
     center: array_like
         Bright field spot position. (row, col)
     pixel_size: float
@@ -492,7 +521,7 @@ def decompose_phi_from_circle(
         electron wavelength, same units as pixel_size.
     degrees: bool
         if True phix, y are returned in degrees rather than radians.
-        
+
     Returns
     -------
     phix, phiy: (j, i) np.ndarray
@@ -516,14 +545,14 @@ def decompose_phi_from_circle(
 
 def rough_virtual_rec(data, box_size=150):
 
-    """    
+    """
     Perform a rough virtual bright field reconstruction from a rectangular box centered on the direct beam spot.
 
     Parameters
     ----------
     data: 4D (M, N, L, P) ndarray
     box_size: size of the box where the reconstruction is performed.
-    
+
     Returns
     -------
     VR0: (M, N) ndarray
@@ -558,13 +587,13 @@ def ij_box_indices(points, lengths, shape):
     Parameters
     ----------
     points: a tuple with the coordinates i and j of the point that the rectangle is drawn
-    lengths: a tuple with the lenghts of the rectangle at each direction 
+    lengths: a tuple with the lenghts of the rectangle at each direction
     shape: the shape of the image where the points are contained
-    
+
     Returns
     --------------
     A list with the min and max rectangle coordinates
-    
+
     """
 
     assert (
@@ -599,11 +628,11 @@ def generate_VR(data, i, j, i_side, j_side, in_box=True):
     j: column coordinate of the selected diffraction disk in j
     i_side: height of the box in the vertical direction
     j_side: width of the box in the horizontal direction
-    
+
     Returns
     ------------
     Virtual Reconstructed image with dimensions (x,y)
-    
+
     """
 
     i_range, j_range = ij_box_indices((i, j), (i_side, j_side), data.shape[-2:])
@@ -621,14 +650,14 @@ def generate_VR(data, i, j, i_side, j_side, in_box=True):
 
 def interactive_VR(data, image=None, box=50, cmap="inferno"):
     """
-    
+
     Generate interactive jupyter notebook figure with adjustable slider to generate virtual reconstructions.
-    
+
     Parameters
     ----------
     data, ndarry, rank-4
         4D-STEM data.
-    
+
     """
     # generate figure
     fig, ax = plt.subplots(ncols=2, figsize=plt.figaspect(1.0 / 2))
@@ -749,7 +778,7 @@ def interactive_fit(
     ax.add_artist(circle)
 
     # plot points
-    pts, = ax.plot([], [], "r.")
+    (pts,) = ax.plot([], [], "r.")
 
     def update(i, j, box):
         # interactive function
@@ -834,3 +863,95 @@ def interactive_fit(
     fig.canvas.mpl_connect("motion_notify_event", on_move)
 
     display(VBox([interactive(update, i=i, j=j, box=box), selection]))
+
+
+def plot_laue_circle_results(data, phi1, phi2, VBF, mask, circles, points):
+    """
+
+    Interactive func to show the data and resulting fits.
+
+    Parameters
+    ----------
+    data: 4d-ndarray
+        The 4D-STEM data.
+    phi1, phi2: 2d ndarray
+        The produced maps.
+    VBF: 2d ndarray
+        Virtual Reconstruction.
+    mask: 2d ndarray
+        Mask of relevant data points.
+    circles: 3d ndarray
+        The Laue circle parameters for each diffraction patterns.
+    points: 3d ndarray
+        The computed diffraction spot positions for each diffraction pattern.
+
+    """
+    fig = plt.figure(figsize=(10, 4))
+
+    gs = GridSpec(3, 2)
+
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[:, 1])
+
+    axphix = fig.add_subplot(gs[1, 0])
+    axphiy = fig.add_subplot(gs[2, 0])
+
+    layer = np.ones(data.shape[:2] + (4,))
+    layer[mask, -1] = 0
+
+    fraction = 0.1
+    im12 = axphix.matshow(phi1, cmap="Spectral")
+    axphix.imshow(layer)
+    cb12 = fig.colorbar(im12, ax=axphix, fraction=fraction)
+
+    im13 = axphiy.matshow(phi2, cmap="Spectral")
+    axphiy.imshow(layer)
+    cb13 = fig.colorbar(im13, ax=axphiy, fraction=fraction)
+
+    axphix.set_axis_off()
+    axphiy.set_axis_off()
+
+    (px,) = axphix.plot([], [], "o", markersize=5, mew=2, mec="k", mfc="w")
+    (py,) = axphiy.plot([], [], "o", markersize=5, mew=2, mec="k", mfc="w")
+
+    im11 = ax1.imshow(VBF, cmap="inferno")
+    cb11 = fig.colorbar(im11, ax=ax1, fraction=fraction)
+    ax1.set_xticks([])
+    ax1.set_yticks([])
+
+    im2 = ax2.imshow(data[0, 0, :, :], origin="lower", cmap="gray")
+    (p2,) = ax2.plot([], [], "r.")
+
+    # # show circle solutions from minimization alogirithm
+    _circle = ax2.add_patch(
+        plt.Circle((0, 0), 0, lw=2, color="red", fill=None, label="Laue circle fit")
+    )
+
+    def axUpdate(i, j):
+
+        px.set_xdata(j)
+        px.set_ydata(i)
+        py.set_xdata(j)
+        py.set_ydata(i)
+
+        im2.set_array(data[i, j])
+
+        _circle.set_radius(circles[i, j, 0])
+        _circle.center = (circles[i, j, 1], circles[i, j, 2])
+
+        p2.set_data(points[i, j].T[::-1])
+
+    ax2.set_xticks([])
+    ax2.set_yticks([])
+    ax2.legend()
+
+    # for all plots -->
+    w = interactive(
+        axUpdate,
+        i=IntSlider(VBF.shape[0] // 2, 0, VBF.shape[0] - 1),
+        j=IntSlider(VBF.shape[1] // 2, 0, VBF.shape[1] - 1),
+    )
+
+    display(w)
+    fig.tight_layout()
+    fig.show()
